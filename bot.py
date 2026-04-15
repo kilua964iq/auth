@@ -17,7 +17,7 @@ warnings.filterwarnings('ignore')
 # ============================================
 # Bot Configuration - By Mustafa @o8380
 # ============================================
-BOT_TOKEN = "8757567113:AAFsM6wJfxf3XBUqwFY0aP-V-6Q16dQHdY0"
+BOT_TOKEN = "8757567113:AAEc7a5KXfmhBNh65M6hwy6Fz2qHhqrgOBs"
 OWNER_ID = 1013384909
 OWNER_USERNAME = "o8380"
 OWNER_NAME = "Mustafa"
