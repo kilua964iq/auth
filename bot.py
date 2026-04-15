@@ -9,6 +9,8 @@ import warnings
 from fake_useragent import UserAgent
 import os
 import sys
+import telebot
+from telebot import types
 
 warnings.filterwarnings('ignore')
 
@@ -19,6 +21,13 @@ BOT_TOKEN = "8757567113:AAFsM6wJfxf3XBUqwFY0aP-V-6Q16dQHdY0"
 OWNER_ID = 1013384909
 OWNER_USERNAME = "o8380"
 OWNER_NAME = "Mustafa"
+
+bot = telebot.TeleBot(BOT_TOKEN)
+
+# مسح Webhook
+import requests
+requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true")
+requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/logOut")
 
 # ============================================
 # Helper Functions
@@ -204,6 +213,27 @@ async def process_stripe_card(card_data, proxy_url=None):
     except Exception as e:
         return False, f'System Error: {str(e)}'
 
+def check_card_sync(card_input):
+    try:
+        parts = card_input.split('|')
+        if len(parts) != 4:
+            return "❌ Invalid format. Use: cc|month|year|cvv"
+        
+        cc, mes, ano, cvv = parts
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(check_card(cc, mes, ano, cvv))
+        loop.close()
+        
+        if result['is_live']:
+            return f"✅ APPROVED | {result['response']}"
+        else:
+            return f"❌ DECLINED | {result['response']}"
+            
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+
 async def check_card(cc, mes, ano, cvv, proxy=None):
     card_data = {'number': cc, 'exp_month': mes, 'exp_year': ano, 'cvc': cvv}
     is_approved, response_msg = await process_stripe_card(card_data, proxy_url=proxy)
@@ -228,125 +258,164 @@ async def check_card(cc, mes, ano, cvv, proxy=None):
     }
 
 # ============================================
-# Single Card Check Function
+# BIN Lookup Function
 # ============================================
 
-def check_single_card(card_input):
+def get_bin_info(cc):
+    result = {'brand': 'Unknown', 'type': 'Unknown', 'level': 'Unknown', 'bank': 'Unknown', 'country': 'Unknown', 'flag': '🌍'}
     try:
-        parts = card_input.split('|')
-        if len(parts) != 4:
-            return "Error: Invalid format. Use: cc|month|year|cvv"
-        
-        cc, mes, ano, cvv = parts
-        
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(check_card(cc, mes, ano, cvv))
-        loop.close()
-        
-        if result['is_live']:
-            return f"✅ APPROVED | {result['cc']} | {result['response']}"
-        else:
-            return f"❌ DECLINED | {result['cc']} | {result['response']}"
-            
-    except Exception as e:
-        return f"Error: {str(e)}"
+        response = requests.get(f"https://lookup.binlist.net/{cc[:6]}", headers={'Accept-Version': '3'}, timeout=8)
+        if response.status_code == 200:
+            data = response.json()
+            result['brand'] = data.get('scheme', 'Unknown').upper()
+            result['type'] = data.get('type', 'Unknown').upper()
+            result['level'] = data.get('brand', 'Unknown').upper()
+            result['bank'] = data.get('bank', {}).get('name', 'Unknown')
+            result['country'] = data.get('country', {}).get('name', 'Unknown')
+            flag_map = {'US': '🇺🇸', 'GB': '🇬🇧', 'CA': '🇨🇦', 'AU': '🇦🇺', 'DE': '🇩🇪', 'RU': '🇷🇺', 'AE': '🇦🇪'}
+            result['flag'] = flag_map.get(data.get('country', {}).get('alpha2', ''), '🌍')
+    except:
+        pass
+    return result
 
 # ============================================
-# Bulk Card Check Function
+# Telegram Bot Commands
 # ============================================
 
-def check_bulk_cards(file_path, output_file=None):
-    results = []
+@bot.message_handler(commands=['start'])
+def start_command(message):
+    start_text = f"""<b>Welcome {message.from_user.first_name} 🤖</b>
+- - - - - - - - - - - - - - - - - - - - - -
+[ϟ] <b>Gateway:</b> Stripe Auth
+[ϟ] <b>Status:</b> Active ✅
+[ϟ] <b>Developer:</b> @{OWNER_USERNAME}
+- - - - - - - - - - - - - - - - - - - - - -
+<b>Commands:</b>
+/pp [card] - Check single card
+/bin [bin] - BIN lookup
+/help - Help menu
+- - - - - - - - - - - - - - - - - - - - - -
+<b>Dev by:</b> {OWNER_NAME} - @{OWNER_USERNAME} 🗣</b>"""
     
+    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    markup.add(types.KeyboardButton("🔍 Manual Card"), types.KeyboardButton("🔎 BIN"))
+    
+    bot.send_message(message.chat.id, start_text, parse_mode="HTML", reply_markup=markup)
+
+@bot.message_handler(commands=['help'])
+def help_command(message):
+    help_text = f"""<b>🤖 Stripe Auth Bot - Help</b>
+━━━━━━━━━━━━━━━━━━━━━━
+<b>Commands:</b>
+/pp 123456|12|28|123 - Check card
+/bin 123456 - BIN lookup
+/help - This menu
+
+<b>Format:</b>
+<code>card|month|year|cvv</code>
+Example: <code>4131550147659971|09|30|865</code>
+
+<b>Dev:</b> @{OWNER_USERNAME}
+━━━━━━━━━━━━━━━━━━━━━━"""
+    bot.reply_to(message, help_text, parse_mode="HTML")
+
+@bot.message_handler(commands=['pp'])
+def pp_command(message):
     try:
-        with open(file_path, 'r') as f:
-            cards = [line.strip() for line in f if line.strip()]
+        parts = message.text.split(maxsplit=1)
+        if len(parts) < 2:
+            bot.reply_to(message, "❌ Usage: /pp 123456|12|28|123")
+            return
         
-        print(f"[*] Total cards loaded: {len(cards)}")
-        print(f"[*] Starting bulk check - By Mustafa @o8380")
-        print("-" * 50)
+        cc = parts[1].strip()
+        wait_msg = bot.reply_to(message, "⏳ Checking card...")
         
-        for i, card in enumerate(cards, 1):
-            result = check_single_card(card)
-            results.append(result)
-            print(f"[{i}/{len(cards)}] {result}")
+        result = check_card_sync(cc)
         
-        # Save results
-        if output_file:
-            with open(output_file, 'w') as f:
-                f.write("\n".join(results))
-            print(f"\n[*] Results saved to: {output_file}")
+        bin_data = get_bin_info(cc)
+        bin_info = f"Info: {bin_data['brand']} · {bin_data['type']}\nBank: {bin_data['bank']}\nCountry: {bin_data['country']} {bin_data['flag']}"
         
-        # Summary
-        approved = sum(1 for r in results if 'APPROVED' in r)
-        declined = sum(1 for r in results if 'DECLINED' in r)
+        result_msg = f"""<b>#StripeAuth_Donation</b>
+- - - - - - - - - - - - - - - - - - - - - -
+[ϟ] <b>Card:</b> <code>{cc}</code>
+[ϟ] <b>Result:</b> {result}
+- - - - - - - - - - - - - - - - - - - - - -
+{bin_info}
+- - - - - - - - - - - - - - - - - - - - - -
+[⌤] <b>Dev by:</b> @{OWNER_USERNAME}</b>"""
         
-        print("-" * 50)
-        print(f"[✓] Bulk check completed - By Mustafa @o8380")
-        print(f"    Approved: {approved}")
-        print(f"    Declined: {declined}")
-        print(f"    Total: {len(cards)}")
+        bot.delete_message(message.chat.id, wait_msg.message_id)
+        bot.send_message(message.chat.id, result_msg, parse_mode="HTML")
         
-        return results
-        
-    except FileNotFoundError:
-        return [f"Error: File '{file_path}' not found"]
     except Exception as e:
-        return [f"Error: {str(e)}"]
+        bot.reply_to(message, f"❌ Error: {str(e)}")
 
-# ============================================
-# Interactive Menu
-# ============================================
-
-def main():
-    print("=" * 50)
-    print("  Stripe Auth Card Checker - By Mustafa @o8380")
-    print("=" * 50)
-    print(f"  Owner: {OWNER_NAME} - @{OWNER_USERNAME}")
-    print("=" * 50)
-    
-    while True:
-        print("\n[1] Single Card Check")
-        print("[2] Bulk Card Check (from file)")
-        print("[3] Exit")
+@bot.message_handler(commands=['bin'])
+def bin_command(message):
+    try:
+        parts = message.text.split()
+        if len(parts) < 2:
+            bot.reply_to(message, "❌ Usage: /bin 123456")
+            return
         
-        choice = input("\nSelect option: ").strip()
+        bin_num = parts[1].strip()
+        if len(bin_num) < 6:
+            bot.reply_to(message, "❌ BIN must be at least 6 digits")
+            return
         
-        if choice == '1':
-            print("\n" + "-" * 30)
-            print("Single Card Check - By Mustafa @o8380")
-            print("-" * 30)
-            card_input = input("Enter card (cc|month|year|cvv): ").strip()
-            print("\n[*] Checking...")
-            result = check_single_card(card_input)
-            print(f"\n{result}")
-            
-        elif choice == '2':
-            print("\n" + "-" * 30)
-            print("Bulk Card Check - By Mustafa @o8380")
-            print("-" * 30)
-            file_path = input("Enter file path: ").strip()
-            save_option = input("Save results to file? (y/n): ").strip()
-            output_file = "results.txt" if save_option.lower() == 'y' else None
-            print("\n")
-            check_bulk_cards(file_path, output_file)
-            
-        elif choice == '3':
-            print("\n[*] Goodbye! - Mustafa @o8380")
-            break
-        else:
-            print("\n[!] Invalid option. Please try again.")
+        wait_msg = bot.reply_to(message, "⏳ Looking up BIN...")
+        bin_data = get_bin_info(bin_num)
+        
+        result_msg = f"""<b>🔍 BIN Lookup Result</b>
+- - - - - - - - - - - - - - - - - - - - - -
+[ϟ] <b>BIN:</b> <code>{bin_num}</code>
+[ϟ] <b>Brand:</b> {bin_data['brand']}
+[ϟ] <b>Type:</b> {bin_data['type']}
+[ϟ] <b>Level:</b> {bin_data['level']}
+[ϟ] <b>Bank:</b> {bin_data['bank']}
+[ϟ] <b>Country:</b> {bin_data['country']} {bin_data['flag']}
+- - - - - - - - - - - - - - - - - - - - - -
+[⌤] <b>Dev by:</b> @{OWNER_USERNAME}</b>"""
+        
+        bot.delete_message(message.chat.id, wait_msg.message_id)
+        bot.send_message(message.chat.id, result_msg, parse_mode="HTML")
+        
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error: {str(e)}")
+
+@bot.message_handler(func=lambda message: message.text == "🔍 Manual Card")
+def manual_card_button(message):
+    bot.reply_to(message, "Send card in format: 123456|12|28|123")
+
+@bot.message_handler(func=lambda message: message.text == "🔎 BIN")
+def bin_button(message):
+    bot.reply_to(message, "Send BIN number: /bin 123456")
+
+@bot.message_handler(func=lambda message: '|' in message.text and not message.text.startswith('/'))
+def auto_card_check(message):
+    wait_msg = bot.reply_to(message, "⏳ Checking card...")
+    result = check_card_sync(message.text)
+    bot.delete_message(message.chat.id, wait_msg.message_id)
+    bot.reply_to(message, result)
+
+@bot.message_handler(func=lambda message: message.text.isdigit() and len(message.text) >= 6 and not message.text.startswith('/'))
+def auto_bin_check(message):
+    wait_msg = bot.reply_to(message, "⏳ Looking up BIN...")
+    bin_num = message.text[:6]
+    bin_data = get_bin_info(bin_num)
+    result_msg = f"""<b>🔍 BIN: {bin_num}</b>
+[ϟ] Brand: {bin_data['brand']}
+[ϟ] Type: {bin_data['type']}
+[ϟ] Bank: {bin_data['bank']}
+[ϟ] Country: {bin_data['country']} {bin_data['flag']}"""
+    bot.delete_message(message.chat.id, wait_msg.message_id)
+    bot.reply_to(message, result_msg, parse_mode="HTML")
 
 # ============================================
-# Entry Point
+# Main Loop
 # ============================================
 
 if __name__ == "__main__":
-    print(f"""
-    ╔══════════════════════════════════════════════════╗
-    ║     Stripe Auth Card Checker - By Mustafa        ║
-    ║              Telegram: @o8380                     ║
-    ╚══════════════════════════════════════════════════╝
-    """)
-    main()
+    print(f"🤖 Bot Started - By {OWNER_NAME} @{OWNER_USERNAME}")
+    print(f"Token: {BOT_TOKEN[:20]}...")
+    bot.infinity_polling(timeout=15, skip_pending=True)
