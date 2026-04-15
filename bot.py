@@ -11,7 +11,7 @@ from fake_useragent import UserAgent
 # ============================================
 # Bot Configuration - By Mustafa @o8380
 # ============================================
-TOKEN = "8564867940:AAG9BF3XQCDwwTCCO8hKjCU_zRaiP0OXb7o"
+TOKEN = "8564867940:AAFV_cbbIhvYHuWz5emA1Xy-MfiyGW-N0TU"
 OWNER_ID = 1013384909
 OWNER_USERNAME = "o8380"
 OWNER_NAME = "Mustafa"
